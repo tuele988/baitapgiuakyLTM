@@ -31,7 +31,16 @@ public class PlayerController : MonoBehaviour
     {
         if (isLocalPlayer)
         {
-            Vector2 newPos = rb.position + moveInput * speed * Time.fixedDeltaTime;
+            // 1. Tính toán vector di chuyển (movement)
+            // Lấy input, chuẩn hóa để di chuyển chéo không nhanh hơn,
+            // và nhân với tốc độ (speed) cùng thời gian cố định (Time.fixedDeltaTime)
+            // để đảm bảo chuyển động mượt mà và độc lập với tốc độ khung hình.
+            Vector2 movement = moveInput.normalized * speed * Time.fixedDeltaTime; 
+            
+            // 2. Tính toán vị trí mới (newPos)
+            Vector2 newPos = rb.position + movement;
+            
+            // 3. Di chuyển Rigidbody
             rb.MovePosition(newPos);
         }
     }
