@@ -26,10 +26,14 @@ public class NetworkManagerTCP : MonoBehaviour
 
     public GameObject serverPlayerPrefab;
     public GameObject clientPlayerPrefab;
+    public TMP_Text scoreText;
 
     private Vector3 lastSentPos;
     private float sendInterval = 0.05f;
     private float sendTimer = 0f;
+    public int serverScore = 0;
+    public int clientScore = 0;
+    private const int WINNING_SCORE = 3;
 
     public static NetworkManagerTCP Instance;
 
@@ -204,6 +208,7 @@ public class NetworkManagerTCP : MonoBehaviour
                 }
 
                 string msg = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                 Debug.Log("test data " + msg);
                 UnityMainThreadDispatcher.Enqueue(() => HandleMessage(msg));
             }
         }
@@ -215,9 +220,10 @@ public class NetworkManagerTCP : MonoBehaviour
     }
 
     void HandleMessage(string msg)
+{
+    if (msg.StartsWith("POS|"))
     {
-        if (!msg.StartsWith("POS|")) return;
-
+        // Logic xử lý vị trí cũ
         string[] parts = msg.Split('|');
         if (parts.Length < 3) return;
 
@@ -228,6 +234,74 @@ public class NetworkManagerTCP : MonoBehaviour
                 other.transform.position = new Vector3(x, y, 0);
         }
     }
+    else if (msg.StartsWith("FLAG|"))
+    {
+        // CHỈ SERVER MỚI XỬ LÝ GÓI TIN FLAG TỪ CẢ 2 PHÍA
+        Debug.Log($"update isServer");
+        string[] parts = msg.Split('|');
+        if (parts.Length >= 2)
+        {
+            string capturedBy = parts[1]; // "ServerPlayer" hoặc "ClientPlayer"
+            ProcessFlagCapture(capturedBy);
+        }
+    }
+    else if (msg.StartsWith("SCORE|"))
+    {
+        // Cả Server và Client đều xử lý gói tin cập nhật điểm từ Server
+        string[] parts = msg.Split('|');
+        if (parts.Length >= 3 && int.TryParse(parts[1], out int sScore) && int.TryParse(parts[2], out int cScore))
+        {
+            serverScore = sScore;
+            clientScore = cScore;
+            UpdateScoreUI();
+        }
+    }
+    else if (msg.StartsWith("FLAG_RESET")) // <-- THÊM DÒNG NÀY
+    {
+           Debug.Log($"update condition FLAG_RESET");
+        // Cả Server và Client đều xử lý lệnh reset cờ từ Server
+        HandleFlagReset();
+    }
+    else if (msg.StartsWith("GAMEOVER|"))
+    {
+        // Cả Server và Client đều xử lý gói tin kết thúc game từ Server
+        string[] parts = msg.Split('|');
+        if (parts.Length >= 2)
+        {
+            string winner = parts[1];
+            HandleGameOver(winner);
+        }
+    }
+}
+
+// TRONG NetworkManagerTCP.cs
+
+void HandleFlagReset()
+{
+    UnityMainThreadDispatcher.Enqueue(() =>
+    {
+        FlagHandler flag = FlagHandler.Instance; 
+        if (flag != null)
+        {
+            flag.ResetFlagPosition();
+        }
+        
+        GameObject serverPlayer = GameObject.FindGameObjectWithTag("ServerPlayer");
+        if (serverPlayer != null)
+        {
+            serverPlayer.GetComponent<PlayerController>().ResetToSpawnPosition();
+        }
+
+        // 3. Reset ClientPlayer
+        GameObject clientPlayer = GameObject.FindGameObjectWithTag("ClientPlayer");
+        if (clientPlayer != null)
+        {
+            clientPlayer.GetComponent<PlayerController>().ResetToSpawnPosition();
+        }
+        
+        Debug.Log("Flag and Players have been reset for new round.");
+    });
+}
 
     void LateUpdate()
     {
@@ -255,4 +329,139 @@ public class NetworkManagerTCP : MonoBehaviour
         }
         catch { }
     }
+    
+    public void SendFlagCaptured()
+{
+    if (!isConnected || stream == null || (client != null && !client.Connected))
+        return;
+
+    try
+    {
+        // Gửi thông báo đến Server (Server sẽ tự xử lý, Client gửi đến Server)
+        string playerTag = isServer ? "ServerPlayer" : "ClientPlayer";
+        string msg = $"FLAG|{playerTag}"; // Ví dụ: FLAG|ServerPlayer hoặc FLAG|ClientPlayer
+        byte[] data = Encoding.UTF8.GetBytes(msg);
+        
+        // Sử dụng TCP để đảm bảo gói tin FLAG được nhận
+        stream.Write(data, 0, data.Length);
+        stream.Flush();
+        
+        Debug.Log($"Sent: {msg}");
+    }
+    catch (Exception ex)
+    {
+        Debug.LogError("SendFlagCaptured error: " + ex.Message);
+        isConnected = false;
+    }
+}
+
+// Logic tính điểm CHỈ CHẠY TRÊN SERVER
+void ProcessFlagCapture(string capturedBy)
+{
+    Debug.Log($"{capturedBy} captured the flag!");
+    
+    // Tăng điểm
+    if (capturedBy == "ServerPlayer")
+    {
+        serverScore++;
+    }
+    else if (capturedBy == "ClientPlayer")
+    {
+        clientScore++;
+    }
+
+    // Kiểm tra thắng
+    if (serverScore >= WINNING_SCORE)
+    {
+        // Gửi thông báo thắng đến tất cả
+        BroadcastMessage($"GAMEOVER|ServerPlayer");
+    }
+    else if (clientScore >= WINNING_SCORE)
+    {
+        // Gửi thông báo thắng đến tất cả
+        BroadcastMessage($"GAMEOVER|ClientPlayer");
+    }
+    else
+    {
+        // Gửi thông báo cập nhật điểm
+        BroadcastMessage($"SCORE|{serverScore}|{clientScore}");
+        Debug.Log($"update FLAG_RESET");
+        BroadcastMessage($"FLAG_RESET");
+    }
+}
+
+// Hàm gửi thông điệp đến tất cả (Hiện tại chỉ là Client duy nhất)
+void BroadcastMessage(string msg)
+{
+    // Trong game 2 người chơi TCP đơn giản này, ta chỉ cần gửi đến Client đang kết nối
+    if (!isConnected || stream == null || (client != null && !client.Connected))
+        return;
+
+    try
+    {
+        byte[] data = Encoding.UTF8.GetBytes(msg);
+        stream.Write(data, 0, data.Length);
+        stream.Flush();
+        Debug.Log($"Broadcast: {msg}");
+        
+        // Cập nhật cho Server tự mình (vì Server không tự nhận gói tin qua stream)
+        if (msg.StartsWith("SCORE|"))
+        {
+            string[] parts = msg.Split('|');
+            serverScore = int.Parse(parts[1]);
+            clientScore = int.Parse(parts[2]);
+            UpdateScoreUI();
+        }
+        else if (msg.StartsWith("GAMEOVER|"))
+        {
+            HandleGameOver(msg.Split('|')[1]);
+        }
+        else if (msg.StartsWith("FLAG_RESET")) // <-- THÊM LOGIC NÀY
+        {
+            // Server tự gọi hàm reset cờ của mình
+            HandleFlagReset(); 
+        }
+    }
+    catch (Exception ex)
+    {
+        Debug.LogError("BroadcastMessage error: " + ex.Message);
+    }
+}
+
+// Cập nhật UI (Chạy trên cả Server và Client)
+void UpdateScoreUI()
+{
+    if (scoreText != null)
+    {
+        scoreText.text = $"Core Player 1: {serverScore} - Core Player 2: {clientScore}";
+    }
+}
+
+// Xử lý khi Game Over
+void HandleGameOver(string winner)
+{
+    UpdateScoreUI(); // Cập nhật điểm cuối cùng
+    string message = (winner == (isServer ? "ServerPlayer" : "ClientPlayer")) ? "🏆 YOU WIN!" : "😔 YOU LOSE!";
+
+    // Hiển thị Popup
+    UnityMainThreadDispatcher.Enqueue(() =>
+    {
+        if (popupPanel != null && popupText != null)
+        {
+            popupPanel.SetActive(true);
+            popupText.text = message;
+        }
+        
+        // Ngừng kết nối và dừng game
+        isConnected = false;
+        try {
+            stream?.Close();
+            client?.Close();
+            tcpListener?.Stop();
+        } catch { }
+
+        // Có thể thêm logic load lại scene menu
+    });
+}
+
 }

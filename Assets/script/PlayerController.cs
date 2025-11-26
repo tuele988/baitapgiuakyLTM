@@ -12,7 +12,8 @@ public class PlayerController : MonoBehaviour
     Vector2 moveInput;
     Vector3 lastSentPos;
     float nextSendTime = 0f;
-
+    
+    private GameInitializer gameInitializer;
     void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
@@ -68,5 +69,43 @@ public class PlayerController : MonoBehaviour
                 NetworkManagerTCP.Instance.SendPosition(cur);
             }
         }
+    }
+   public void ResetToSpawnPosition()
+    {
+        if (gameInitializer == null)
+        {
+            // Kiểm tra lại nếu Awake() chạy trước khi GameInitializer sinh ra
+            gameInitializer = FindObjectOfType<GameInitializer>();
+            if (gameInitializer == null)
+            {
+                Debug.LogError("GameInitializer not found! Cannot reset player position.");
+                return;
+            }
+        }
+
+        Vector2 spawnPos = Vector2.zero;
+
+        if (CompareTag("ServerPlayer"))
+        {
+            spawnPos = gameInitializer.serverSpawn;
+        }
+        else if (CompareTag("ClientPlayer"))
+        {
+            spawnPos = gameInitializer.clientSpawn;
+        }
+        
+        // 1. Đặt lại vị trí Transform
+        transform.position = spawnPos;
+        
+        // 2. Reset vị trí Rigidbody (Quan trọng cho vật lý)
+        rb.position = spawnPos; 
+        
+        // 3. Reset lastSentPos để client gửi vị trí mới ngay lập tức
+        lastSentPos = spawnPos;
+        
+        // 4. Reset vận tốc (Tránh nhân vật bị trôi)
+        rb.linearVelocity = Vector2.zero;
+        
+        // Xóa lệnh không chính xác: NetworkManagerTCP.Instance.Update(); 
     }
 }

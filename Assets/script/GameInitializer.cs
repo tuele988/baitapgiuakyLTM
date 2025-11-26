@@ -7,7 +7,6 @@ public class GameInitializer : MonoBehaviour
 
     public Vector2 serverSpawn = new Vector2(-2f, 0f);
     public Vector2 clientSpawn = new Vector2(2f, 0f);
-
    void Start()
 {
     // Kiểm tra xem player đã tồn tại chưa
