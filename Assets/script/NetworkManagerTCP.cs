@@ -16,7 +16,7 @@ public class NetworkManagerTCP : MonoBehaviour
     public Button clientButton;
     public TMP_InputField ipInputField;
     public GameObject popupPanel;
-    private TMP_Text popupText;
+    public TMP_Text popupText;
 
     private TcpListener tcpListener;
     private TcpClient client;
@@ -27,6 +27,7 @@ public class NetworkManagerTCP : MonoBehaviour
     public GameObject serverPlayerPrefab;
     public GameObject clientPlayerPrefab;
     public TMP_Text scoreText;
+    public TMP_Text winmessage;
 
     private Vector3 lastSentPos;
     private float sendInterval = 0.05f;
@@ -89,6 +90,8 @@ public class NetworkManagerTCP : MonoBehaviour
             client.NoDelay = true;
             stream = client.GetStream();
             isConnected = true;
+            _ = ListenForMessagesAsync();
+            await Task.Delay(200);
 
             UnityMainThreadDispatcher.Enqueue(() =>
             {
@@ -188,36 +191,50 @@ public class NetworkManagerTCP : MonoBehaviour
     }
 
     async Task ListenForMessagesAsync()
+{
+    await Task.Delay(200); // tránh bị dispose khi load scene
+
+    byte[] buffer = new byte[1024];
+
+    try
     {
-        byte[] buffer = new byte[1024];
-        try
+        while (isConnected && client != null && client.Client != null && client.Connected)
         {
-            while (isConnected)
+            int bytesRead = 0;
+
+            try
             {
-                if (stream == null || !client.Connected)
-                {
-                    isConnected = false;
-                    break;
-                }
-
-                int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                if (bytesRead <= 0)
-                {
-                    isConnected = false;
-                    break;
-                }
-
-                string msg = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                 Debug.Log("test data " + msg);
-                UnityMainThreadDispatcher.Enqueue(() => HandleMessage(msg));
+                bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
             }
-        }
-        catch (Exception ex)
-        {
-            Debug.LogWarning("ListenForMessages error: " + ex.Message);
-            isConnected = false;
+            catch (ObjectDisposedException)
+            {
+                Debug.LogWarning("Socket disposed safely. Stopping listen.");
+                isConnected = false;
+                break;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("Listen error: " + ex.Message);
+                isConnected = false;
+                break;
+            }
+
+            if (bytesRead <= 0)
+            {
+                isConnected = false;
+                break;
+            }
+
+            string msg = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+            UnityMainThreadDispatcher.Enqueue(() => HandleMessage(msg));
         }
     }
+    catch (Exception ex)
+    {
+        Debug.LogWarning("Fatal ListenForMessages error: " + ex.Message);
+    }
+}
+
 
     void HandleMessage(string msg)
 {
@@ -289,14 +306,17 @@ void HandleFlagReset()
         GameObject serverPlayer = GameObject.FindGameObjectWithTag("ServerPlayer");
         if (serverPlayer != null)
         {
-            serverPlayer.GetComponent<PlayerController>().ResetToSpawnPosition();
+            var pC1 = serverPlayer.GetComponent<PlayerController>();
+            if (pC1 != null)
+                pC1.ResetToSpawnPosition();
         }
 
-        // 3. Reset ClientPlayer
         GameObject clientPlayer = GameObject.FindGameObjectWithTag("ClientPlayer");
         if (clientPlayer != null)
         {
-            clientPlayer.GetComponent<PlayerController>().ResetToSpawnPosition();
+            var pC2 = clientPlayer.GetComponent<PlayerController>();
+            if (pC2 != null)
+                pC2.ResetToSpawnPosition();
         }
         
         Debug.Log("Flag and Players have been reset for new round.");
@@ -364,6 +384,7 @@ void ProcessFlagCapture(string capturedBy)
     if (capturedBy == "ServerPlayer")
     {
         serverScore++;
+        Debug.Log($"Score ServerPlayer{serverScore}"); 
     }
     else if (capturedBy == "ClientPlayer")
     {
@@ -410,6 +431,7 @@ void BroadcastMessage(string msg)
             string[] parts = msg.Split('|');
             serverScore = int.Parse(parts[1]);
             clientScore = int.Parse(parts[2]);
+            Debug.Log($"{parts} serverScore: {serverScore} clientScore:{clientScore}");
             UpdateScoreUI();
         }
         else if (msg.StartsWith("GAMEOVER|"))
@@ -429,39 +451,67 @@ void BroadcastMessage(string msg)
 }
 
 // Cập nhật UI (Chạy trên cả Server và Client)
-void UpdateScoreUI()
+public void UpdateScoreUI()
 {
     if (scoreText != null)
     {
-        scoreText.text = $"Core Player 1: {serverScore} - Core Player 2: {clientScore}";
+        scoreText.text = $"Core 1: {serverScore} - Core 2: {clientScore}";
     }
 }
-
-// Xử lý khi Game Over
-void HandleGameOver(string winner)
+public void SetScoreText(TMP_Text textComponent)
 {
-    UpdateScoreUI(); // Cập nhật điểm cuối cùng
-    string message = (winner == (isServer ? "ServerPlayer" : "ClientPlayer")) ? "🏆 YOU WIN!" : "😔 YOU LOSE!";
+    scoreText = textComponent;
+    Debug.Log("Score UI reference received successfully.");
+}
 
-    // Hiển thị Popup
+public void SetWinmessage(TMP_Text textComponent)
+{
+    winmessage = textComponent;
+}
+
+public void SetpopupPanel(GameObject textComponent)
+{
+    popupPanel = textComponent;
+    Debug.Log("Score UI reference received successfully.");
+}
+// Xử lý khi Game Over
+public async void HandleGameOver(string winner)
+{
+    Debug.Log("Handle Game Over  ");
+    UpdateScoreUI(); // Cập nhật điểm cuối cùng
+
+    string message = (winner == (isServer ? "ServerPlayer" : "ClientPlayer")) 
+                     ? "🏆 YOU WIN!" 
+                     : "😔 YOU LOSE!";
+
+    // Hiển thị Popup trên main thread
     UnityMainThreadDispatcher.Enqueue(() =>
     {
-        if (popupPanel != null && popupText != null)
+        if (popupPanel != null)
         {
             popupPanel.SetActive(true);
-            popupText.text = message;
+            winmessage.text = message;
         }
-        
-        // Ngừng kết nối và dừng game
-        isConnected = false;
-        try {
-            stream?.Close();
-            client?.Close();
-            tcpListener?.Stop();
-        } catch { }
-
-        // Có thể thêm logic load lại scene menu
     });
+
+    // 1️⃣ Ngừng vòng lặp ListenForMessagesAsync
+    isConnected = false;
+
+    // 2️⃣ Đợi vòng lặp ListenForMessagesAsync thoát
+    await Task.Delay(200); // hoặc lưu Listen task và await
+
+    // 3️⃣ Chỉ sau khi Listen đã thoát mới đóng socket
+    try
+    {
+        stream?.Close();
+        client?.Close();
+        tcpListener?.Stop();
+        Debug.Log("Network connection safely closed after game over.");
+    }
+    catch (Exception ex)
+    {
+        Debug.LogWarning("Error closing network: " + ex.Message);
+    }
 }
 
 }

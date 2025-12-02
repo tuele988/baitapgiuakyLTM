@@ -6,12 +6,15 @@ public class FlagHandler : MonoBehaviour
     private bool isCaptured = false; 
     public static FlagHandler Instance { get; private set; }
     private Vector3 initialPosition;
+    private Coroutine resetCoroutine;
 
     private void Awake()
     {
         if (Instance == null)
         {
             Instance = this;
+
+            initialPosition = transform.position; 
         }
         else
         {
@@ -21,32 +24,42 @@ public class FlagHandler : MonoBehaviour
     
     void OnTriggerEnter2D(Collider2D other)
     {
+        if (isCaptured) return; 
+
         if (other.CompareTag("ServerPlayer") || other.CompareTag("ClientPlayer"))
         {
-            if (NetworkManagerTCP.Instance.isConnected && !isCaptured)
+            if (other.GetComponent<PlayerController>().isLocalPlayer)
             {
-                isCaptured = true;
-                Debug.Log($"{other.tag} touched the flag.");
+                isCaptured = true; 
+                
+                gameObject.SetActive(false); 
 
                 NetworkManagerTCP.Instance.SendFlagCaptured();
-                
-                StartCoroutine(ResetCaptureState());
-
-                gameObject.SetActive(false); 
             }
         }
     }
-    
+
     public void ResetFlagPosition()
     {
+        if (resetCoroutine != null)
+        {
+            StopCoroutine(resetCoroutine);
+        }
         
-        gameObject.SetActive(true);
+        transform.position = initialPosition;
+        gameObject.SetActive(true); 
+        
+        isCaptured = true; 
 
+        resetCoroutine = StartCoroutine(ResetCapturedStatus());
+        Debug.Log("Flag reset to position and waiting for capture status reset.");
     }
-    
-    IEnumerator ResetCaptureState()
+
+    IEnumerator ResetCapturedStatus()
     {
-        yield return new WaitForSeconds(1.0f); 
-        isCaptured = false;
+        yield return new WaitForSeconds(1f); 
+        isCaptured = false; 
+        resetCoroutine = null;
+        Debug.Log("Flag is ready for capture (isCaptured = false).");
     }
 }

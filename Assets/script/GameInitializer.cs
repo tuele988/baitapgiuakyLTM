@@ -1,18 +1,66 @@
 using UnityEngine;
+using TMPro;
 
 public class GameInitializer : MonoBehaviour
 {
     public GameObject serverPlayerPrefab; // gán ServerPlayerPrefab trong inspector
     public GameObject clientPlayerPrefab; // gán ClientPlayerPrefab trong inspector
+    public TMP_Text scoreDisplay;
+    public GameObject popupPanel;
+    public TMP_Text winmessage;
 
     public Vector2 serverSpawn = new Vector2(-2f, 0f);
     public Vector2 clientSpawn = new Vector2(2f, 0f);
    void Start()
-{
-    // Kiểm tra xem player đã tồn tại chưa
+    {
         SpawnPlayers();
+        SendScoreTextReference();
+        SendPopupTextReference();
+    }
+void SendScoreTextReference()
+    {
+        var net = NetworkManagerTCP.Instance;
+        if (net == null)
+        {
+            Debug.LogError("NetworkManagerTCP.Instance is null! Cannot update score UI.");
+            return;
+        }
+        
+        if (scoreDisplay == null)
+        {
+            Debug.LogError("Score Display is not assigned in GameInitializer Inspector!");
+            return;
+        }
 
-}
+        // Truyền đối tượng TMP_Text cho Network Manager
+        net.SetScoreText(scoreDisplay);
+
+        net.SetWinmessage(winmessage);
+        // Cập nhật điểm số ban đầu (thường là 0-0)
+        net.UpdateScoreUI(); 
+    }
+
+    void SendPopupTextReference()
+    {
+        var net = NetworkManagerTCP.Instance;
+        if (net == null)
+        {
+            Debug.LogError("NetworkManagerTCP.Instance is null! Cannot update score UI.");
+            return;
+        }
+        
+        if (scoreDisplay == null)
+        {
+            Debug.LogError("Score Display is not assigned in GameInitializer Inspector!");
+            return;
+        }
+
+        // Truyền đối tượng TMP_Text cho Network Manager
+        net.SetpopupPanel(popupPanel);
+
+        // Cập nhật điểm số ban đầu (thường là 0-0)
+        net.UpdateScoreUI(); 
+    }
 
 void SpawnPlayers()
 {

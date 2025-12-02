@@ -1709,6 +1709,7 @@ MonoBehaviour:
   clientButton: {fileID: 1947553809}
   ipInputField: {fileID: 973768214}
   popupPanel: {fileID: 621604765}
+  popupText: {fileID: 0}
   isServer: 0
   isConnected: 0
   serverPlayerPrefab: {fileID: 0}
