@@ -8,6 +8,9 @@ using UnityEngine.SceneManagement;
 using System;
 using System.Text;
 using System.Collections;
+using System.Security.Cryptography.X509Certificates;
+using System.Net.Security;
+
 
 public class NetworkManagerTCP : MonoBehaviour
 {
@@ -20,7 +23,7 @@ public class NetworkManagerTCP : MonoBehaviour
 
     private TcpListener tcpListener;
     private TcpClient client;
-    private NetworkStream stream;
+    private SslStream sslStream;
     public bool isServer = false;
     public bool isConnected = false;
 
@@ -37,6 +40,10 @@ public class NetworkManagerTCP : MonoBehaviour
     private const int WINNING_SCORE = 3;
 
     public static NetworkManagerTCP Instance;
+    [Header("SSL/TLS Settings")]
+    public X509Certificate2 serverCertificate; 
+    public string certificatePath = "server.pfx"; 
+    public string certificatePassword = "1234";
 
     void Awake()
     {
@@ -60,6 +67,21 @@ public class NetworkManagerTCP : MonoBehaviour
         if (popupPanel != null)
             popupText = popupPanel.GetComponentInChildren<TMP_Text>();
 
+        // 🔑 LOGIC TẢI CHỨNG CHỈ (Khắc phục lỗi Missing Certificate)
+        try
+        {
+            // Nếu bạn đặt file server.pfx trong thư mục gốc của project (Assets), 
+            // chỉ cần dùng certificatePath. Nếu không, hãy dùng đường dẫn đầy đủ:
+            serverCertificate = new X509Certificate2(certificatePath, certificatePassword);
+            Debug.Log("✅ Server Certificate loaded successfully.");
+        }
+        catch (Exception ex)
+        {
+            // Nếu lỗi, Server không thể khởi động chế độ SSL an toàn.
+            Debug.LogError($"❌ FAILED to load server certificate. Check path/password and ensure .pfx includes private key. Error: {ex.Message}");
+            serverCertificate = null;
+        }
+
         Application.runInBackground = true;
     }
 
@@ -74,80 +96,126 @@ public class NetworkManagerTCP : MonoBehaviour
 
     // ==================== SERVER ====================
     public async void StartServerAsync()
+{
+    // Cần kiểm tra chứng chỉ (Giả định serverCertificate đã được tải trong Awake())
+    if (serverCertificate == null)
     {
-        isServer = true;
         popupPanel?.SetActive(true);
-        popupText.text = "🚀 Starting server...";
-
-        tcpListener = new TcpListener(IPAddress.Any, 8888);
-        tcpListener.Start();
-
-        popupText.text = "Server started. Waiting for client...";
-
-        try
-        {
-            client = await tcpListener.AcceptTcpClientAsync();
-            client.NoDelay = true;
-            stream = client.GetStream();
-            isConnected = true;
-            _ = ListenForMessagesAsync();
-            await Task.Delay(200);
-
-            UnityMainThreadDispatcher.Enqueue(() =>
-            {
-                popupPanel.SetActive(false);
-                GameObject[] menuObjects = GameObject.FindGameObjectsWithTag("MainMenu");
-                foreach (var obj in menuObjects)
-                {
-                    obj.SetActive(false);
-                }
-                SceneManager.LoadScene("SampleScene", LoadSceneMode.Single);
-                StartCoroutine(SpawnPlayersAfterLoad());
-            });
-
-            _ = ListenForMessagesAsync();
-        }
-        catch (Exception ex)
-        {
-            popupText.text = "❌ Server Error: " + ex.Message;
-        }
+        popupText.text = "❌ Cannot start server: Server certificate is missing.";
+        return;
     }
+
+    isServer = true;
+    popupPanel?.SetActive(true);
+    popupText.text = "🚀 Starting server...";
+
+    tcpListener = new TcpListener(IPAddress.Any, 8888);
+    tcpListener.Start();
+
+    popupText.text = "Server started. Waiting for client (with SSL)...";
+
+    try
+    {
+        client = await tcpListener.AcceptTcpClientAsync();
+        client.NoDelay = true;
+        
+        // 1. Tạo SslStream từ NetworkStream
+        // THAY THẾ stream = client.GetStream();
+        sslStream = new SslStream(client.GetStream(), false); // Giả sử bạn đổi tên biến từ stream thành sslStream
+        
+        // 2. Thực hiện Server-side SSL/TLS Handshake
+        await sslStream.AuthenticateAsServerAsync(serverCertificate, 
+                                                 clientCertificateRequired: false, 
+                                                 checkCertificateRevocation: true);
+        
+        isConnected = true;
+        popupText.text = "✅ Client connected via SSL/TLS!";
+        
+        _ = ListenForMessagesAsync();
+        await Task.Delay(200);
+
+        UnityMainThreadDispatcher.Enqueue(() =>
+        {
+            popupPanel.SetActive(false);
+            GameObject[] menuObjects = GameObject.FindGameObjectsWithTag("MainMenu");
+            foreach (var obj in menuObjects)
+            {
+                obj.SetActive(false);
+            }
+            SceneManager.LoadScene("SampleScene", LoadSceneMode.Single);
+            StartCoroutine(SpawnPlayersAfterLoad());
+        });
+
+        // Chỉ cần gọi ListenForMessagesAsync() một lần
+    }
+    catch (Exception ex)
+    {
+        popupText.text = "❌ Server SSL Error: " + ex.Message;
+        Debug.LogError("Server SSL Handshake Error: " + ex.Message);
+        isConnected = false;
+    }
+}
 
     // ==================== CLIENT ====================
     public async void StartClientAsync()
+{
+    isServer = false;
+    string serverIP = ipInputField.text;
+    popupPanel?.SetActive(true);
+    popupText.text = $"🔗 Connecting to {serverIP} (with SSL)...";
+
+    try
     {
-        isServer = false;
-        string serverIP = ipInputField.text;
-        popupPanel?.SetActive(true);
-        popupText.text = $"🔗 Connecting to {serverIP}...";
+        client = new TcpClient();
+        await client.ConnectAsync(serverIP, 8888);
+        client.NoDelay = true;
+        
+        // 1. Tạo SslStream, truyền hàm xác thực chứng chỉ Server
+        // THAY THẾ stream = client.GetStream();
+        sslStream = new SslStream(client.GetStream(), false, ValidateServerCertificate); // Giả sử bạn đổi tên biến từ stream thành sslStream
 
-        try
+        // 2. Thực hiện Client-side SSL/TLS Handshake
+        // Tên host phải khớp với Common Name (CN) trong chứng chỉ Server
+        string hostName = serverIP == "127.0.0.1" ? "localhost" : serverIP; 
+        await sslStream.AuthenticateAsClientAsync(hostName); 
+        
+        isConnected = true;
+        popupText.text = "✅ Connected via SSL/TLS!";
+
+        UnityMainThreadDispatcher.Enqueue(() =>
         {
-            client = new TcpClient();
-            await client.ConnectAsync(serverIP, 8888);
-            client.NoDelay = true;
-            stream = client.GetStream();
-            isConnected = true;
-
-            UnityMainThreadDispatcher.Enqueue(() =>
+            popupPanel.SetActive(false);
+            GameObject[] menuObjects = GameObject.FindGameObjectsWithTag("MainMenu");
+            foreach (var obj in menuObjects)
             {
-                popupPanel.SetActive(false);
-                GameObject[] menuObjects = GameObject.FindGameObjectsWithTag("MainMenu");
-                foreach (var obj in menuObjects)
-                {
-                    obj.SetActive(false);
-                }
-                SceneManager.LoadScene("SampleScene", LoadSceneMode.Single);
-                StartCoroutine(SpawnPlayersAfterLoad());
-            });
+                obj.SetActive(false);
+            }
+            SceneManager.LoadScene("SampleScene", LoadSceneMode.Single);
+            StartCoroutine(SpawnPlayersAfterLoad());
+        });
 
-            _ = ListenForMessagesAsync();
-        }
-        catch (Exception ex)
-        {
-            popupText.text = "❌ Connection failed: " + ex.Message;
-        }
+        _ = ListenForMessagesAsync();
     }
+    catch (Exception ex)
+    {
+        popupText.text = "❌ Connection failed (SSL): " + ex.Message;
+        Debug.LogError("Client SSL Handshake Error: " + ex.Message);
+        isConnected = false;
+    }
+}
+
+private static bool ValidateServerCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+{
+    // Đây là ví dụ chấp nhận chứng chỉ tự ký cho mục đích học tập/thử nghiệm.
+    if (sslPolicyErrors == SslPolicyErrors.None)
+        return true;
+
+    Debug.LogWarning($"Certificate error encountered: {sslPolicyErrors}. Accepting for test purposes.");
+    
+    // Rất quan trọng: Trong môi trường học tập, ta chấp nhận lỗi chứng chỉ để kết nối.
+    // Trong môi trường thực tế, bạn sẽ trả về false nếu có lỗi.
+    return true; 
+}
 
     // ==================== SPAWN NHÂN VẬT ====================
     IEnumerator SpawnPlayersAfterLoad()
@@ -173,15 +241,15 @@ public class NetworkManagerTCP : MonoBehaviour
     // ==================== TRUYỀN DỮ LIỆU ====================
     public void SendPosition(Vector3 pos)
     {
-        if (!isConnected || stream == null || (client != null && !client.Connected))
+        if (!isConnected || sslStream == null || (client != null && !client.Connected))
             return;
 
         try
         {
             string msg = $"POS|{pos.x}|{pos.y}";
             byte[] data = Encoding.UTF8.GetBytes(msg);
-            stream.Write(data, 0, data.Length);
-            stream.Flush();
+            sslStream.Write(data, 0, data.Length);
+            sslStream.Flush();
         }
         catch (Exception ex)
         {
@@ -204,7 +272,7 @@ public class NetworkManagerTCP : MonoBehaviour
 
             try
             {
-                bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                bytesRead = await sslStream.ReadAsync(buffer, 0, buffer.Length);
             }
             catch (ObjectDisposedException)
             {
@@ -343,7 +411,7 @@ void HandleFlagReset()
         isConnected = false;
         try
         {
-            stream?.Close();
+            sslStream?.Close();
             client?.Close();
             tcpListener?.Stop();
         }
@@ -352,7 +420,7 @@ void HandleFlagReset()
     
     public void SendFlagCaptured()
 {
-    if (!isConnected || stream == null || (client != null && !client.Connected))
+    if (!isConnected || sslStream == null || (client != null && !client.Connected))
         return;
 
     try
@@ -363,8 +431,8 @@ void HandleFlagReset()
         byte[] data = Encoding.UTF8.GetBytes(msg);
         
         // Sử dụng TCP để đảm bảo gói tin FLAG được nhận
-        stream.Write(data, 0, data.Length);
-        stream.Flush();
+        sslStream.Write(data, 0, data.Length);
+        sslStream.Flush();
         
         Debug.Log($"Sent: {msg}");
     }
@@ -415,14 +483,14 @@ void ProcessFlagCapture(string capturedBy)
 void BroadcastMessage(string msg)
 {
     // Trong game 2 người chơi TCP đơn giản này, ta chỉ cần gửi đến Client đang kết nối
-    if (!isConnected || stream == null || (client != null && !client.Connected))
+    if (!isConnected || sslStream == null || (client != null && !client.Connected))
         return;
 
     try
     {
         byte[] data = Encoding.UTF8.GetBytes(msg);
-        stream.Write(data, 0, data.Length);
-        stream.Flush();
+        sslStream.Write(data, 0, data.Length);
+        sslStream.Flush();
         Debug.Log($"Broadcast: {msg}");
         
         // Cập nhật cho Server tự mình (vì Server không tự nhận gói tin qua stream)
@@ -503,7 +571,7 @@ public async void HandleGameOver(string winner)
     // 3️⃣ Chỉ sau khi Listen đã thoát mới đóng socket
     try
     {
-        stream?.Close();
+        sslStream?.Close();
         client?.Close();
         tcpListener?.Stop();
         Debug.Log("Network connection safely closed after game over.");
